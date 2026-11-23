@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../data/partida_dao.dart';
 import '../data/partida_guardada_dao.dart';
 import '../logic/juego_2048.dart';
@@ -99,9 +100,15 @@ class _JuegoScreenState extends State<JuegoScreen> with WidgetsBindingObserver {
     setState(() {
       if (juego.puntuacion > _mejor) _mejor = juego.puntuacion;
     });
-    if (juego.hayMovimientos()) return;
+    if (!juego.hayMovimientos()) await _terminarPartida();
+  }
 
-    // Fin de partida: transacción (insertar en partidas + borrar partida_guardada).
+  /// Guarda la partida en el historial y empieza una nueva.
+  /// Se usa al perder y al pulsar el botón de terminar.
+  Future<void> _terminarPartida() async {
+    final juego = _juego;
+    if (juego == null) return;
+    // Transacción: insertar en partidas + borrar partida_guardada.
     try {
       await _partidaDao.registrarPartidaTerminada(Partida(
         usuarioId: widget.usuario.id!,
@@ -112,11 +119,26 @@ class _JuegoScreenState extends State<JuegoScreen> with WidgetsBindingObserver {
         fecha: DateTime.now(),
       ));
       await _preferencias.guardarMejorPuntuacionSiEsMayor(juego.puntuacion);
-      _mensaje('Fin de la partida: ${juego.puntuacion} puntos. Guardada en el historial');
+      _mensaje('Partida terminada: ${juego.puntuacion} puntos. Guardada en el historial');
     } catch (e) {
       _mensaje('$e');
     }
     if (mounted) setState(() => _juego = Juego2048.nueva());
+  }
+
+  Future<void> _confirmarTerminar() async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Terminar partida'),
+        content: const Text('La partida se guardará en el historial y empezará una nueva.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Terminar')),
+        ],
+      ),
+    );
+    if (confirmar == true) await _terminarPartida();
   }
 
   // Ir a otra pantalla también cuenta como salir del juego, así que se guarda antes.
@@ -131,48 +153,62 @@ class _JuegoScreenState extends State<JuegoScreen> with WidgetsBindingObserver {
     final juego = _juego;
     final tema = Theme.of(context);
     final paleta = AjustesScope.of(context).paleta;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.usuario.usuario),
-        actions: [
-          IconButton(onPressed: () => _abrir(const HistorialScreen()), icon: const Icon(Icons.history)),
-          IconButton(onPressed: () => _abrir(const RankingScreen()), icon: const Icon(Icons.leaderboard)),
-          IconButton(onPressed: () => _abrir(const AjustesScreen()), icon: const Icon(Icons.settings)),
-        ],
+    // Flechas del teclado como alternativa a los botones.
+    // Focus con autofocus hace que la pantalla reciba las teclas nada más abrirse.
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.arrowUp): () => _mover(Direccion.arriba),
+        const SingleActivator(LogicalKeyboardKey.arrowDown): () => _mover(Direccion.abajo),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _mover(Direccion.izquierda),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () => _mover(Direccion.derecha),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          appBar: AppBar(
+            title: Text(widget.usuario.usuario),
+            actions: [
+              IconButton(onPressed: _confirmarTerminar, icon: const Icon(Icons.flag), tooltip: 'Terminar partida'),
+              IconButton(onPressed: () => _abrir(const HistorialScreen()), icon: const Icon(Icons.history)),
+              IconButton(onPressed: () => _abrir(const RankingScreen()), icon: const Icon(Icons.leaderboard)),
+              IconButton(onPressed: () => _abrir(const AjustesScreen()), icon: const Icon(Icons.settings)),
+            ],
+          ),
+          body: juego == null
+              ? const Center(child: CircularProgressIndicator())
+              : ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Text(
+                'Puntos: ${juego.puntuacion}   Mejor: $_mejor   '
+                    'Movs: ${juego.movimientos}   Tiempo: ${juego.segundos}s',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              GridView.count(
+                crossAxisCount: Juego2048.lado,
+                shrinkWrap: true, // necesario dentro de un ListView
+                physics: const NeverScrollableScrollPhysics(),
+                mainAxisSpacing: 6,
+                crossAxisSpacing: 6,
+                children: [
+                  for (final valor in juego.tablero) _casilla(valor, paleta, tema),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(onPressed: () => _mover(Direccion.izquierda), icon: const Icon(Icons.arrow_back)),
+                  IconButton(onPressed: () => _mover(Direccion.arriba), icon: const Icon(Icons.arrow_upward)),
+                  IconButton(onPressed: () => _mover(Direccion.abajo), icon: const Icon(Icons.arrow_downward)),
+                  IconButton(onPressed: () => _mover(Direccion.derecha), icon: const Icon(Icons.arrow_forward)),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
-      body: juego == null
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Text(
-                  'Puntos: ${juego.puntuacion}   Mejor: $_mejor   '
-                  'Movs: ${juego.movimientos}   Tiempo: ${juego.segundos}s',
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 12),
-                GridView.count(
-                  crossAxisCount: Juego2048.lado,
-                  shrinkWrap: true, // necesario dentro de un ListView
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 6,
-                  crossAxisSpacing: 6,
-                  children: [
-                    for (final valor in juego.tablero) _casilla(valor, paleta, tema),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    IconButton(onPressed: () => _mover(Direccion.izquierda), icon: const Icon(Icons.arrow_back)),
-                    IconButton(onPressed: () => _mover(Direccion.arriba), icon: const Icon(Icons.arrow_upward)),
-                    IconButton(onPressed: () => _mover(Direccion.abajo), icon: const Icon(Icons.arrow_downward)),
-                    IconButton(onPressed: () => _mover(Direccion.derecha), icon: const Icon(Icons.arrow_forward)),
-                  ],
-                ),
-              ],
-            ),
     );
   }
 
